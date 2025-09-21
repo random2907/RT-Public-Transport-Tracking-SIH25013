@@ -6,6 +6,16 @@ class LocationService {
   final osrm = Osrm();
 
   Future<Position> getLocation() async {
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      // if (permission == LocationPermission.denied) {
+      //   return;
+      // }
+      if (permission == LocationPermission.deniedForever) {
+        await Geolocator.openAppSettings();
+      }
+    }
     return await Geolocator.getCurrentPosition();
   }
 
