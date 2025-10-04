@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart' hide Route;
 import 'package:flutter_map/flutter_map.dart';
-import 'package:flutter_map_marker_cluster/flutter_map_marker_cluster.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:public_transport/parsing/rtgtfs.dart';
@@ -23,12 +22,15 @@ class HomepageState extends State<Homepage> {
   GtfsData gtfsdata = GtfsData();
   List<VehiclePosition>? vehiclePosition;
   LocationService locationService = LocationService();
-  LatLng? selected;
+  VehiclePosition? selected;
+  LatLng? startSelected;
+  LatLng? stopSelected;
 
   List<Stops>? stops;
   List<Route>? routes;
   List<StopTimes>? stoptimes;
   List<Trips>? trips;
+  Map<int, List<Stops>>? routeStops;
 
   @override
   void initState() {
@@ -62,20 +64,6 @@ class HomepageState extends State<Homepage> {
           )
           .toList();
     }
-    // List<Marker>? vehiclemarkers;
-    // if (vehiclePosition != null) {
-    //   vehiclemarkers = vehiclePosition!
-    //       .map(
-    //         (e) => Marker(
-    //           point: LatLng(e.position.latitude, e.position.longitude),
-    //           width: 80,
-    //           height: 80,
-    //           child: const Icon(Icons.bus_alert_rounded, color: Colors.red),
-    //         ),
-    //       )
-    //       .toList();
-    // }
-    //
     return Scaffold(
       appBar: AppBar(title: const Text("Map"), centerTitle: true),
       floatingActionButton: Column(
@@ -83,15 +71,95 @@ class HomepageState extends State<Homepage> {
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
           FloatingActionButton(
+            heroTag: 'start',
+            onPressed: () async {
+              if (stops != null) {
+                startSelected = await showSearch<LatLng>(
+                  context: context,
+                  delegate: SearchDestination(stops!),
+                );
+              }
+              if (startSelected != null) {
+                setState(() {
+                  _mapcontroller.move(startSelected!, 12);
+                  tapPostion.add(startSelected!);
+                });
+              }
+            },
+            child: const Text("Start"),
+          ),
+          FloatingActionButton(
+            heroTag: 'stop',
+            onPressed: () async {
+              stopSelected = await showSearch<LatLng>(
+                context: context,
+                delegate: SearchDestination(stops!),
+              );
+              if (stopSelected != null) {
+                setState(() {
+                  _mapcontroller.move(stopSelected!, 12);
+                  tapPostion.add(stopSelected!);
+                });
+                if (stops!.length > 1) {
+                  List<LatLng> newPoints = await locationService.getShortest(
+                    stops!
+                        .map(
+                          (e) =>
+                              LatLng(e.position.latitude, e.position.longitude),
+                        )
+                        .toList(),
+                  );
+                  setState(() {
+                    points = newPoints;
+                  });
+                }
+              }
+            },
+            child: const Text("Stop"),
+          ),
+          FloatingActionButton(
             heroTag: 'searchButton',
             onPressed: () async {
-              selected = await showSearch<LatLng>(
+              selected = await showSearch<VehiclePosition>(
                 context: context,
-                delegate: SearchItem(vehiclePosition!, stops!),
+                delegate: SearchItem(
+                  vehiclePosition!
+                      .where(
+                        (e) =>
+                            e.position.latitude != 0.0 ||
+                            e.position.longitude != 0.0,
+                      )
+                      .toList(),
+                ),
               );
-              setState(() {
-                _mapcontroller.move(selected!, 12);
-              });
+              if (selected != null) {
+                stops = routeStops![int.parse(selected!.trip.routeId)];
+                debugPrint("selected: ${selected!.position}");
+                if (stops != null && stops!.length > 1) {
+                  List<LatLng> newPoints = await locationService.getShortest(
+                    stops!
+                        .map(
+                          (e) =>
+                              LatLng(e.position.latitude, e.position.longitude),
+                        )
+                        .toList(),
+                  );
+                  debugPrint("Points: $newPoints");
+                  setState(() {
+                    points.addAll(newPoints);
+                  });
+                  debugPrint("updated");
+                }
+                setState(() {
+                  _mapcontroller.move(
+                    LatLng(
+                      selected!.position.latitude,
+                      selected!.position.longitude,
+                    ),
+                    12,
+                  );
+                });
+              }
             },
             child: const Icon(Icons.search),
           ),
@@ -113,7 +181,14 @@ class HomepageState extends State<Homepage> {
           ),
           FloatingActionButton(
             heroTag: 'refreshButton',
-            onPressed: _getGtfsData,
+            onPressed: () async {
+              await _getGtfsData();
+              selected = vehiclePosition!.firstWhere((e) {
+                debugPrint("${e.vehicle.id} ?= ${selected!.vehicle.id}");
+                return e.vehicle.id == selected?.vehicle.id;
+              });
+              debugPrint("updated selected: ${selected!.position}");
+            },
             child: const Icon(Icons.refresh),
           ),
           FloatingActionButton(
@@ -121,6 +196,8 @@ class HomepageState extends State<Homepage> {
               setState(() {
                 points = [];
                 tapPostion = [];
+                stops = [];
+                selected = null;
               });
             },
             child: const Icon(Icons.clear),
@@ -132,11 +209,11 @@ class HomepageState extends State<Homepage> {
         mapController: _mapcontroller,
         options: MapOptions(
           onMapReady: () async {
-            // stops = await gtfsdata.loadStopsFromDb();
-            print(stops);
-            routes = await gtfsdata.loadRoutesFromDb();
-            stoptimes = await gtfsdata.loadStopTimesFromDb();
-            trips = await gtfsdata.loadTripsFromDb();
+            routeStops = await gtfsdata.getStopsOfRoute();
+            // stops = await gtfsdata.parseStopsFromCsv();
+            // routes = await gtfsdata.parseRoutesFromCsv();
+            // stoptimes = await gtfsdata.parseStopTimesFromCsv();
+            // trips = await gtfsdata.parseTripsFromCsv();
             await _getGtfsData();
             if (stops != null) {
               _mapcontroller.move(stops![0].position, 12);
@@ -163,26 +240,10 @@ class HomepageState extends State<Homepage> {
             urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
             userAgentPackageName: 'dev.fleaflet.flutter_map.example',
           ),
-          if (markers != null)
-            MarkerClusterLayerWidget(
-              options: MarkerClusterLayerOptions(
-                markers: markers,
-                builder: (context, markers) {
-                  return SizedBox.shrink();
-                },
-              ),
-            ),
-          // if (vehiclemarkers != null)
-          //   MarkerClusterLayerWidget(
-          //     options: MarkerClusterLayerOptions(
-          //       markers: vehiclemarkers,
-          //       builder: (cont, markers) {
-          //         return SizedBox.shrink();
-          //       },
-          //     ),
-          //   ),
           MarkerLayer(
             markers: [
+              if (markers != null) ...markers,
+
               if (personPos != null)
                 Marker(
                   point: LatLng(personPos!.latitude, personPos!.longitude),
@@ -197,7 +258,10 @@ class HomepageState extends State<Homepage> {
                   ),
               if (selected != null)
                 Marker(
-                  point: selected!,
+                  point: LatLng(
+                    selected!.position.latitude,
+                    selected!.position.longitude,
+                  ),
                   child: const Icon(Icons.bus_alert_sharp, color: Colors.red),
                 ),
             ],
@@ -218,10 +282,9 @@ class HomepageState extends State<Homepage> {
   }
 }
 
-class SearchItem extends SearchDelegate<LatLng> {
+class SearchItem extends SearchDelegate<VehiclePosition> {
   List<VehiclePosition> vehiclePosition;
-  List<Stops> stops;
-  SearchItem(this.vehiclePosition, this.stops);
+  SearchItem(this.vehiclePosition);
 
   @override
   List<Widget>? buildActions(BuildContext context) {
@@ -240,7 +303,7 @@ class SearchItem extends SearchDelegate<LatLng> {
   @override
   Widget buildResults(BuildContext context) {
     List<VehiclePosition> matchPosition = vehiclePosition.where((e) {
-      return e.vehicle.id.contains(query);
+      return e.vehicle.id.contains(query.toUpperCase());
     }).toList();
 
     return ListView.builder(
@@ -248,13 +311,7 @@ class SearchItem extends SearchDelegate<LatLng> {
       itemBuilder: (context, index) {
         return GestureDetector(
           onTap: () {
-            close(
-              context,
-              LatLng(
-                matchPosition[index].position.latitude,
-                matchPosition[index].position.longitude,
-              ),
-            );
+            close(context, matchPosition[index]);
           },
           child: Card(
             elevation: 5,
@@ -285,7 +342,120 @@ class SearchItem extends SearchDelegate<LatLng> {
                   Text("Speed: ${matchPosition[index].position.speed} km/h"),
                   SizedBox(height: 12),
                   Text("Timestamp: ${matchPosition[index].timestamp}"),
-                  Text("Vehicle Label: ${matchPosition[index].timestamp}"),
+                  Text("Vehicle Label: ${matchPosition[index].vehicle.label}"),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget buildSuggestions(BuildContext context) {
+    return ListView.builder(
+      itemCount: vehiclePosition.length,
+      itemBuilder: (context, index) {
+        return Card(
+          elevation: 5,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Bus ID: ${vehiclePosition[index].vehicle.id}',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                SizedBox(height: 8),
+                Text("Trip ID: ${vehiclePosition[index].trip.tripId}"),
+                Text("Start Time: ${vehiclePosition[index].trip.startTime}"),
+                Text("Start Date: ${vehiclePosition[index].trip.startDate}"),
+                Text("Route ID: ${vehiclePosition[index].trip.routeId}"),
+                Text(
+                  "Schedule Relationship: ${vehiclePosition[index].trip.scheduleRelationship}",
+                ),
+                SizedBox(height: 12),
+                Text(
+                  "Position: Latitude: ${vehiclePosition[index].position.latitude}, Longitude: ${vehiclePosition[index].position.longitude}",
+                ),
+                Text("Speed: ${vehiclePosition[index].position.speed} km/h"),
+                SizedBox(height: 12),
+                Text("Timestamp: ${vehiclePosition[index].timestamp}"),
+                Text("Vehicle Label: ${vehiclePosition[index].vehicle.label}"),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget? buildLeading(BuildContext context) {
+    return BackButton(
+      onPressed: () {
+        Navigator.pop(context);
+      },
+    );
+  }
+}
+
+class SearchDestination extends SearchDelegate<LatLng> {
+  List<Stops> stops;
+  SearchDestination(this.stops);
+
+  @override
+  List<Widget>? buildActions(BuildContext context) {
+    List<IconButton> button = [];
+    button.add(
+      IconButton(
+        onPressed: () {
+          query = "";
+        },
+        icon: Icon(Icons.clear),
+      ),
+    );
+    return button;
+  }
+
+  @override
+  Widget buildResults(BuildContext context) {
+    List<Stops> matchstops = stops.where((e) {
+      return e.stopName.contains(query);
+    }).toList();
+
+    return ListView.builder(
+      itemCount: matchstops.length,
+      itemBuilder: (context, index) {
+        return GestureDetector(
+          onTap: () {
+            close(context, matchstops[index].position);
+          },
+          child: Card(
+            elevation: 5,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Stop Code: ${matchstops[index].stopCode}',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  Text("Stop ID: ${matchstops[index].stopId}"),
+                  Text(
+                    "Position: ${matchstops[index].position.latitude} ${matchstops[index].position.longitude}",
+                  ),
+                  Text("Stop Name: ${matchstops[index].stopName}"),
+                  Text("Zone ID: ${matchstops[index].zoneId}"),
                 ],
               ),
             ),

@@ -73,7 +73,11 @@ flutter:
 
   # To add assets to your application, add an assets section, like this:
   assets:
-    - assets/gtfs.db
+    # - assets/gtfs.db
+    - assets/stops.txt
+    - assets/routes.txt
+    - assets/stop_times.txt
+    - assets/trips.txt
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
